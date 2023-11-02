@@ -1,0 +1,75 @@
+#!/usr/bin/python3
+
+import os
+from subprocess import run
+import shlex
+import argparse
+from pathlib import Path
+from tempfile import mkstemp
+
+
+def get_cfg():
+    username = os.getlogin()
+    parser = argparse.ArgumentParser(
+        prog='convert',
+        description='Convert SACLA data',
+    )
+    parser.add_argument('start')
+    parser.add_argument('end')
+    parser.add_argument('-b', '--background', dest='background', required=False, default=None)
+    parser.add_argument('-wd', '--work-dir', dest='workdirectory', required=False, default=Path(f'/work/{username}/'), type=lambda s: Path(s).absolute())
+    parser.add_argument('-od', '--output-dir', dest='outputdirectory', required=False, default=Path.home(), type=lambda s: Path(s).absolute())
+    cfg = parser.parse_args()
+    return cfg
+
+
+def main(cfg):
+
+    to_submit = {}
+    signal_script = f"""#!/bin/bash
+
+module load SACLA_tool/1.0.0
+export LLST_PATH="/bl3strg/exp2018-2:/arcv1/recall/20231005/ExpData/bl3strg/exp2018-2"
+
+cd {cfg.workdirectory.as_posix()}
+for i in {{{cfg.start}..{cfg.end}}}; do
+    # Make tag list files
+    MakeTagList -b 3 -r $i -out $i.list
+    # DataConvert
+    DataConvert4 -l $i.list -o $i.h5 -f DataConvert_sample.conf
+done
+"""
+    to_submit['signal'] = signal_script
+    if cfg.background is not None:
+        background_script = f"""#!/bin/bash
+
+module load SACLA_tool/1.0.0
+export LLST_PATH="/bl3strg/exp2018-2:/arcv1/recall/20231005/ExpData/bl3strg/exp2018-2"
+
+cd {cfg.workdirectory.as_posix()}
+for i in {{{cfg.background}}}; do
+    # Make tag list files
+    MakeTagList -b 3 -r $i -out $i.list
+    # DataConvert
+    DataConvert4 -l $i.list -o $i.h5 -f DataConvert_sample.conf
+done
+"""
+        to_submit['background'] = background_script
+
+    for k, script in to_submit.items():
+        if k == 'signal':
+            ofile = cfg.outputdirectory / f'signal_{cfg.start}-{cfg.end}.o'
+            efile = cfg.outputdirectory / f'signal_{cfg.start}-{cfg.end}.e'
+        elif k == 'background':
+            ofile = cfg.outputdirectory / f'background_{cfg.background}.o'
+            efile = cfg.outputdirectory / f'background_{cfg.background}.e'
+        filename = Path(mkstemp(dir=cfg.workdirectory)[1])
+        with open(filename, 'w') as fh:
+            fh.write(script)
+            fh.write(f'\nrm {filename.absolute()}\n')
+        print(shlex.split(f'qsub {filename.absolute().as_posix()} -o {ofile.absolute().as_posix()} -e {efile.absolute().as_posix}'))
+
+
+if __name__ == '__main__':
+    cfg = get_cfg()
+    main(cfg)
