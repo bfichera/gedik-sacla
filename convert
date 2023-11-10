@@ -19,6 +19,8 @@ def get_cfg():
     parser.add_argument('-b', '--background', dest='background', required=False, default=None)
     parser.add_argument('-wd', '--work-dir', dest='workdirectory', required=False, default=Path(f'/work/{username}/'), type=lambda s: Path(s).absolute())
     parser.add_argument('-od', '--output-dir', dest='outputdirectory', required=False, default=Path.home(), type=lambda s: Path(s).absolute())
+    parser.add_argument('-c', '--config', dest='configfile', required=True, type=lambda s: Path(s).absolute())
+    parser.add_argument('-m', '--memlimit', dest='memorylimitgb', required=False, type=int, default=10)
     cfg = parser.parse_args()
     return cfg
 
@@ -29,14 +31,13 @@ def main(cfg):
     signal_script = f"""#!/bin/bash
 
 module load SACLA_tool/1.0.0
-export LLST_PATH="/bl3strg/exp2018-2:/arcv1/recall/20231005/ExpData/bl3strg/exp2018-2"
 
 cd {cfg.workdirectory.as_posix()}
 for i in {{{cfg.start}..{cfg.end}}}; do
     # Make tag list files
     MakeTagList -b 3 -r $i -out $i.list
     # DataConvert
-    DataConvert4 -l $i.list -o $i.h5 -f DataConvert_sample.conf
+    DataConvert4 -l $i.list -o $i.h5 -f {cfg.configfile.as_posix()}
 done
 """
     to_submit['signal'] = signal_script
@@ -44,14 +45,13 @@ done
         background_script = f"""#!/bin/bash
 
 module load SACLA_tool/1.0.0
-export LLST_PATH="/bl3strg/exp2018-2:/arcv1/recall/20231005/ExpData/bl3strg/exp2018-2"
 
 cd {cfg.workdirectory.as_posix()}
-for i in {{{cfg.background}}}; do
+for i in {{{cfg.background}..{cfg.background}}}; do
     # Make tag list files
     MakeTagList -b 3 -r $i -out $i.list
     # DataConvert
-    DataConvert4 -l $i.list -o $i.h5 -f DataConvert_sample.conf
+    DataConvert4 -l $i.list -o $i.h5 -f {cfg.configfile.as_posix()}
 done
 """
         to_submit['background'] = background_script
@@ -66,8 +66,8 @@ done
         filename = Path(mkstemp(dir=cfg.workdirectory)[1])
         with open(filename, 'w') as fh:
             fh.write(script)
-            fh.write(f'\nrm {filename.absolute()}\n')
-        print(shlex.split(f'qsub {filename.absolute().as_posix()} -o {ofile.absolute().as_posix()} -e {efile.absolute().as_posix}'))
+            fh.write(f'\nrm {filename.absolute().as_posix()}\n')
+        run(shlex.split(f'qsub -o {ofile.absolute().as_posix()} -e {efile.absolute().as_posix()} -l mem={cfg.memorylimitgb}gb {filename.absolute().as_posix()}'))
 
 
 if __name__ == '__main__':

@@ -1,0 +1,117 @@
+#!/home/blstaff/SACLA_python/bin/python
+# coding: utf-8
+
+
+######### Setup everything ############
+
+from pathlib import Path
+import matplotlib.pyplot as plt
+import h5py
+import argparse
+import numpy as np
+
+
+def makeoutputdir(parent, start=None, end=None, name=None):
+    if name is None:
+        assert start is not None and end is not None
+        name = f'output_{start}_{end}'
+    outputdir = Path(parent).absolute() / name
+    outputdir.mkdir(parents=False, exist_ok=True)
+    return outputdir
+
+
+def strtobool(val, default):
+    val = val.lower()
+    if val == '':
+        return default
+    elif val in ('y', 'yes', 't', 'true', 'on', '1'):
+        return 1
+    elif val in ('n', 'no', 'f', 'false', 'off', '0'):
+        return 0
+    else:
+        raise ValueError("invalid truth value %r" % (val,))
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument('start', type=int)
+parser.add_argument('end', type=int)
+parser.add_argument('-b', '--background', dest='background', required=True, type=int)
+parser.add_argument('-pd', '--parentdir', dest='parentdirectory', required=True, type=lambda x: Path(x).absolute())
+parser.add_argument('-wd', '--workdir', dest='workdirectory', required=True, type=lambda x: Path(x).absolute())
+parser.add_argument('x1', type=int)
+parser.add_argument('y1', type=int)
+parser.add_argument('x2', type=int)
+parser.add_argument('y2', type=int)
+parser.add_argument('-l', '--bkglimit', dest='backgroundlimit', required=False, default=5, type=int)
+cfg = parser.parse_args()
+
+cfg.outputdirectory = makeoutputdir(cfg.parentdirectory, start=cfg.start, end=cfg.end)
+
+#Run numbers
+runList = range(cfg.start,cfg.end)
+
+
+# ## HDF5 file structure
+
+tagList_str = 'run_{}/event_info/tag_number_list'
+stage_str = 'run_{}/event_info/xfel_bl_3_st_2_motor_1/position'
+int00_str = 'run_{}/event_info/xfel_bl_3_st_2_pd_user_6_fitting_peak/voltage'
+int01_str = 'run_{}/event_info/xfel_bl_3_st_2_pd_user_7_fitting_peak/voltage'
+laser_shutter_str = 'run_{}/event_info/xfel_bl_3_lh1_shutter_1_open_valid/status'
+detector_str = 'run_{}/detector_2d_1/tag_{}/detector_data'
+
+
+######### Background Image Plot############
+
+# background run number
+bgrun = cfg.background
+with h5py.File(cfg.workdirectory / '{}.h5'.format(bgrun), 'r') as h5f:
+    #taglish denote the tag number of all the images in the h5 file
+    tagList = h5f[tagList_str.format(bgrun)][...]
+    #initiate background image
+    bgimg = h5f[detector_str.format(bgrun, tagList[0])][...]
+    #background averaging
+    for tag in tagList[1:]:
+        bgimg += h5f[detector_str.format(bgrun, tag)][...]
+    bgimg /= len(tagList)
+
+
+plt.imshow(bgimg)
+plt.savefig(cfg.outputdirectory / 'MPCCD_background.pdf')
+
+
+########### ROI SETUP #################
+
+#Choose the first run for example
+run = runList[0]
+with h5py.File(cfg.workdirectory / '{}.h5'.format(run), 'r') as h5f:
+    allTagList = h5f[tagList_str.format(run)][...]
+    laser_shutter_list = h5f[laser_shutter_str.format(run)][...] == 1
+    tagList = allTagList[laser_shutter_list]
+    img = h5f[detector_str.format(run, tagList[0])][...]
+    #image averaging
+    for tag in tagList[1:]:
+        img += h5f[detector_str.format(run, tag)][...]
+    img /= len(tagList)
+    img -= bgimg
+
+plt.imshow(img)
+plt.savefig(cfg.outputdirectory / 'RawImage.pdf')
+print(f"Raw image saved to {(cfg.outputdirectory / 'RawImage.pdf').absolute().as_posix()}")
+print('Open this image and choose an ROI, then run analyze_roi.py.')
+
+# ROI definition
+x1 = cfg.x1
+y1 = cfg.y1
+x2 = cfg.x2
+y2 = cfg.y2
+# bkglimit defines the number of pixels on each side that you would like to consider as background so that it will be subtracted from the curves
+bkglimit = cfg.backgroundlimit
+
+plt.imshow((img)[y1:y2, x1:x2])
+plt.savefig(cfg.outputdirectory / 'ROI with boundary for background subtraction.pdf')
+plt.imshow((img)[y1+bkglimit:y2-bkglimit, x1+bkglimit:x2-bkglimit])
+plt.savefig(cfg.outputdirectory / 'ROI without boundary for background subtraction.pdf')
+print('Saved ROI images: ')
+print(f"{(cfg.outputdirectory / 'ROI with boundary for background subtraction.pdf').absolute().as_posix()}")
+print(f"{(cfg.outputdirectory / 'ROI without boundary for background subtraction.pdf').absolute().as_posix()}")

@@ -1,0 +1,582 @@
+#!/usr/bin/python3
+
+from pathlib import Path
+import argparse
+from tempfile import mkstemp
+from subprocess import run
+import shlex
+
+
+def makeoutputdir(parent, start=None, end=None, name=None, fake=False):
+    if name is None:
+        assert start is not None and end is not None
+        name = f'output_{start}_{end}'
+    outputdir = Path(parent).absolute() / name
+    if not fake:
+        outputdir.mkdir(parents=False, exist_ok=True)
+    return outputdir
+
+
+def get_cfg():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('start', type=int)
+    parser.add_argument('end', type=int)
+    parser.add_argument('-b', '--background', dest='background', required=True, type=int)
+    parser.add_argument('-pd', '--parentdir', dest='parentdirectory', required=True, type=lambda x: Path(x).absolute())
+    parser.add_argument('-wd', '--workdir', dest='workdirectory', required=True, type=lambda x: Path(x).absolute())
+    parser.add_argument('x1', type=int)
+    parser.add_argument('y1', type=int)
+    parser.add_argument('x2', type=int)
+    parser.add_argument('y2', type=int)
+    parser.add_argument('-l', '--bkglimit', dest='backgroundlimit', required=False, default=5, type=int)
+    parser.add_argument('-t', '--intth', dest='intensitythreshold', required=False, default=0.05, type=float)
+    parser.add_argument('-m', '--memlimit', dest='memorylimitgb', required=False, type=int, default=10)
+    parser.add_argument('-i', '--interactive', dest='interactive', action='store_true')
+    cfg = parser.parse_args()
+    cfg.outputdirectory = makeoutputdir(cfg.parentdirectory, start=cfg.start, end=cfg.end, fake=False)
+    return cfg
+
+
+def main(cfg):
+
+    python_script = """#!/home/blstaff/SACLA_python/bin/python3
+
+from warnings import warn
+from pathlib import Path
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import h5py
+import argparse
+
+
+def makeoutputdir(parent, start=None, end=None, name=None, fake=False):
+    if name is None:
+        assert start is not None and end is not None
+        name = f'output_{start}_{end}'
+    outputdir = Path(parent).absolute() / name
+    if not fake:
+        outputdir.mkdir(parents=False, exist_ok=True)
+    return outputdir
+
+
+def rsquared_linear(x, y):
+    slope, intercept = np.polyfit(x, y, 1)
+    model = lambda x: slope*x+intercept
+    return 1-np.sum((y-model(x))**2)/np.sum((y-np.mean(y))**2)
+
+
+def test_rsquared(x, y, threshold=0.95):
+    r2 = rsquared_linear(x, y)
+    print(f'FYI: R2 is {r2}')
+    if r2 <= threshold:
+        warn(f'WARNING: R2 is pretty low!!!! possibly not linear!!!! (R2={r2})')
+    else:
+        print('Linearity test.....PASSED!')
+
+
+def strtobool(val, default):
+    val = val.lower()
+    if val == '':
+        return default
+    elif val in ('y', 'yes', 't', 'true', 'on', '1'):
+        return 1
+    elif val in ('n', 'no', 'f', 'false', 'off', '0'):
+        return 0
+    else:
+        raise ValueError("invalid truth value %r" % (val,))
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument('start', type=int)
+parser.add_argument('end', type=int)
+parser.add_argument('-b', '--background', dest='background', required=True, type=int)
+parser.add_argument('-od', '--outputdir', dest='outputdirectory', required=True, type=lambda x: Path(x).absolute())
+parser.add_argument('-wd', '--workdir', dest='workdirectory', required=True, type=lambda x: Path(x).absolute())
+parser.add_argument('x1', type=int)
+parser.add_argument('y1', type=int)
+parser.add_argument('x2', type=int)
+parser.add_argument('y2', type=int)
+parser.add_argument('-l', '--bkglimit', dest='backgroundlimit', required=False, default=5, type=int)
+parser.add_argument('-t', '--intth', dest='intensitythreshold', required=False, default=0.05, type=float)
+parser.add_argument('-i', '--interactive', dest='interactive', action='store_true')
+cfg = parser.parse_args()
+
+#Run numbers
+runList = range(cfg.start,cfg.end)
+
+
+## HDF5 file structure
+tagList_str = 'run_{}/event_info/tag_number_list'
+stage_str = 'run_{}/event_info/xfel_bl_3_st_2_motor_1/position'
+int00_str = 'run_{}/event_info/xfel_bl_3_st_2_pd_user_6_fitting_peak/voltage'
+int01_str = 'run_{}/event_info/xfel_bl_3_st_2_pd_user_7_fitting_peak/voltage'
+laser_shutter_str = 'run_{}/event_info/xfel_bl_3_lh1_shutter_1_open_valid/status'
+detector_str = 'run_{}/detector_2d_1/tag_{}/detector_data'
+
+
+######### Background Image Plot############
+
+# background run number
+bgrun = cfg.background
+with h5py.File(cfg.workdirectory / '{}.h5'.format(bgrun), 'r') as h5f:
+    #taglish denote the tag number of all the images in the h5 file
+    tagList = h5f[tagList_str.format(bgrun)][...]
+    #initiate background image
+    bgimg = h5f[detector_str.format(bgrun, tagList[0])][...]
+    #background averaging
+    for tag in tagList[1:]:
+        bgimg += h5f[detector_str.format(bgrun, tag)][...]
+    bgimg /= len(tagList)
+
+
+########### ROI SETUP #################
+
+#Choose the first run for example
+run = runList[0]
+with h5py.File(cfg.workdirectory / '{}.h5'.format(run), 'r') as h5f:
+    allTagList = h5f[tagList_str.format(run)][...]
+    laser_shutter_list = h5f[laser_shutter_str.format(run)][...] == 1
+    tagList = allTagList[laser_shutter_list]
+    img = h5f[detector_str.format(run, tagList[0])][...]
+    # image averaging
+    for tag in tagList[1:]:
+        img += h5f[detector_str.format(run, tag)][...]
+    img /= len(tagList)
+    img -= bgimg
+
+#ROI definition
+x1 = cfg.x1
+y1 = cfg.y1
+x2 = cfg.x2
+y2 = cfg.y2
+# bkglimit defines the number of pixels on each side that you would like to consider as background so that it will be subtracted from the curves
+bkglimit = cfg.backgroundlimit
+
+
+############ Intensity aquisition from MPCCD image ##################
+
+dataDF = pd.DataFrame(columns=['run', 'tag', 'stage', 'int0', 'int1_sum', 'int1_max', 'COM_x', 'COM_y', 'sigma_x', 'sigma_y'])
+
+xbkg=0
+ybkg=0
+for run in runList:
+    with h5py.File(cfg.workdirectory / '{}.h5'.format(run), 'r') as h5f:
+        # define the list of parameters
+        laser_shutter_list = h5f[laser_shutter_str.format(run)][...] == 1
+        tagList = h5f[tagList_str.format(run)][...]
+        int00List = h5f[int00_str.format(run)][...]
+        int01List = h5f[int01_str.format(run)][...]
+        stageList = h5f[stage_str.format(run)][...]
+
+        int1SumList = []
+        int1MaxList = []
+        
+        comxList = []
+        comyList = []
+        
+        sigmaxList = []
+        sigmayList = []
+        
+        #for loop that runs the same analysis to all the images in the tagList:
+        for tag in tagList:
+            img = h5f[detector_str.format(run, tag)][...] - bgimg    #subtract the instrument background images
+            img1=img[y1:y2, x1:x2] #ROI that include the rows and columns that will be averaged as background
+            img2=img[y1+bkglimit:y2-bkglimit, x1+bkglimit:x2-bkglimit]   #ROI with pure signals
+            int1SumList.append(img2.sum())    #get the integrated value
+            int1MaxList.append(img2.max())    #get the max value
+            xbkg=(np.mean(img1.sum(axis=0)[0:bkglimit-1])+np.mean(img1.sum(axis=0)[x2-x1-bkglimit:x2-x1-1]))/2
+            ybkg=(np.mean(img1.sum(axis=1)[0:bkglimit-1])+np.mean(img1.sum(axis=1)[y2-y1-bkglimit:y2-y1-1]))/2      
+            img2_mean_x=0 
+            img2_mean_y=0
+            img2_sigma_x=0
+            img2_sigma_y=0
+            # Calculate COM x
+            for ii in range(0,len(img2.sum(axis=0))):
+                img2_mean_x+=ii*(img2.sum(axis=0)[ii]-xbkg)
+            img2_mean_x/=img2.sum(axis=0).sum()
+            # Calculate COM y
+            for ii in range(0,len(img2.sum(axis=1))):
+                img2_mean_y+=ii*(img2.sum(axis=1)[ii]-ybkg)
+            img2_mean_y/=img2.sum(axis=1).sum()
+            # Append to the COM x and y list
+            comxList.append(img2_mean_x)
+            comyList.append(img2_mean_y)
+            # Calculate sigma x
+            for ii in range(0,len(img2.sum(axis=0))):
+                img2_sigma_x+=(img2.sum(axis=0)[ii]-xbkg)*(ii-img2_mean_x)**2
+            img2_sigma_x/=img2.sum(axis=0).sum()
+            img2_sigma_x=np.sqrt(np.absolute(img2_sigma_x))
+            # Calculate sigma y
+            for ii in range(0,len(img2.sum(axis=1))):
+                img2_sigma_y+=(img2.sum(axis=1)[ii]-ybkg)*(ii-img2_mean_y)**2
+            img2_sigma_y/=img2.sum(axis=1).sum()
+            img2_sigma_y=np.sqrt(np.absolute(img2_sigma_y))
+            # Append to the sigma x and y list
+            sigmaxList.append(img2_sigma_x)
+            sigmayList.append(img2_sigma_y)
+
+    # df save all the temporary values of the run
+    df = pd.DataFrame()
+    df['tag'] = tagList
+    df['stage'] = stageList
+    df['laser_shutter_state'] = laser_shutter_list
+    df['int0'] = int00List + int01List
+    df['int1_sum'] = int1SumList
+    df['int1_max'] = int1MaxList
+    df['COM_x'] = comxList
+    df['COM_y'] = comyList
+    df['sigma_x'] = sigmaxList
+    df['sigma_y'] = sigmayList
+    df['run'] = run
+    # dataDF save all the values of different run
+    dataDF = pd.concat([dataDF,df], ignore_index=True)
+
+dataDF.sort_values('tag', inplace=True)
+
+
+##################### Linearity sanity check and intensity threshold setup ###################
+
+# Again, choose the first run for example
+df = dataDF[dataDF['run'] == runList[0]]
+pumpon_df = df[df['laser_shutter_state']]
+
+# linearity check
+x = pumpon_df['int0'].to_numpy()
+y = pumpon_df['int1_sum'].to_numpy()
+x_ = x[(np.logical_not(np.isnan(x))) & (np.logical_not(np.isnan(y)))]
+y_ = y[(np.logical_not(np.isnan(x))) & (np.logical_not(np.isnan(y)))]
+# Can change threshold if desired
+test_rsquared(x_, y_, threshold=0.95)
+plt.scatter(pumpon_df['int0'],pumpon_df['int1_sum']) 
+plt.savefig(cfg.outputdirectory / 'LinearityCheck.pdf')
+print('Saved linearity scatter plot:')
+print((cfg.outputdirectory / 'LinearityCheck.pdf').absolute().as_posix())
+
+
+# In[233]:
+# Plot histogram of all the parameters
+fig, ax = plt.subplots(ncols=6, figsize=(20,5))      
+ax[0].hist(pumpon_df['int0'], bins=200)
+ax[0].set_title('Input')
+ax[1].hist(pumpon_df['int1_sum'], bins=200)
+ax[1].set_title('Intensity')
+ax[2].hist(pumpon_df['COM_x'], bins=200)
+ax[2].set_title('xpos')
+ax[3].hist(pumpon_df['COM_y'], bins=200)
+ax[3].set_title('ypos')
+ax[4].hist(pumpon_df['sigma_x'], bins=200)
+ax[4].set_title('xsigma')
+ax[5].hist(pumpon_df['sigma_y'], bins=200)
+ax[5].set_title('ysigma')
+plt.tight_layout()
+plt.savefig(cfg.outputdirectory / 'histogram_nothreshold.pdf')
+print('Saved histogram of all the parameters:')
+print((cfg.outputdirectory / 'histogram_nothreshold.pdf').absolute().as_posix())
+
+
+# #### Delay scan w/o jitter correction
+
+# Set Intensity threshold and delete the images where the insident intensity I0 is lower than intTh.
+intTh = cfg.intensitythreshold
+norIntRun_mean = []
+norIntRun_std = []
+
+norIntRun_comx = []
+norIntRun_comy = []
+
+norIntRun_sigmax = []
+norIntRun_sigmay = []
+
+norIntRun_mean2 = []
+norIntRun_std2 = []
+
+norIntRun_comx2 = []
+norIntRun_comy2 = []
+
+norIntRun_sigmax2 = []
+norIntRun_sigmay2 = []
+stageRun = []
+
+for run in runList:
+    df = dataDF[dataDF['run'] == run]
+    pumpon_df = df[df['laser_shutter_state']]
+    ### only select the data with higher intensity than intTh. Same apply to the other parameters. All the low values are NaN
+    int0 = pumpon_df['int0'].where(pumpon_df['int0'] > intTh, np.nan)
+    int1_sum=pumpon_df['int1_sum'].where(pumpon_df['int0'] > intTh, np.nan)
+    COM_x=pumpon_df['COM_x'].where(pumpon_df['int0'] > intTh, np.nan)
+    COM_y=pumpon_df['COM_y'].where(pumpon_df['int0'] > intTh, np.nan)
+    sigma_x=pumpon_df['sigma_x'].where(pumpon_df['int0'] > intTh, np.nan)
+    sigma_y=pumpon_df['sigma_y'].where(pumpon_df['int0'] > intTh, np.nan)
+    laser_shutter_list = pumpon_df['laser_shutter_state'].where(pumpon_df['int0'] > intTh, np.nan)
+    
+    ### average the non-NaN values
+    norIntRun_mean.append(np.nanmean(int1_sum/int0))
+    norIntRun_std.append(np.nanstd(int1_sum/int0))
+    
+    norIntRun_comx.append(np.nanmean(COM_x))
+    norIntRun_comy.append(np.nanmean(COM_y))
+    
+    norIntRun_sigmax.append(np.nanmean(sigma_x))
+    norIntRun_sigmay.append(np.nanmean(sigma_y))    
+    
+    stageRun.append(list(pumpon_df['stage'])[0])   
+
+
+# Plot histogram of all the parameters after the threshold is applied. Data should be more concentrated.
+fig, ax = plt.subplots(ncols=6, figsize=(20,5))     
+ax[0].hist(int0, bins=200)
+ax[0].set_title('Input')
+ax[1].hist(int1_sum/int0, bins=200)
+ax[1].set_title('Intensity')
+ax[2].hist(COM_x, bins=200)
+ax[2].set_title('xpos')
+ax[3].hist(COM_y, bins=200)
+ax[3].set_title('ypos')
+ax[4].hist(sigma_x, bins=200)
+ax[4].set_title('xsigma')
+ax[5].hist(sigma_y, bins=200)
+ax[5].set_title('ysigma')
+plt.tight_layout()
+plt.show()
+plt.savefig(cfg.outputdirectory / 'histogram_threshold.pdf')
+print('Saved histogram of all parameters with threshold applied:')
+print((cfg.outputdirectory / 'histogram_threshold.pdf').absolute().as_posix())
+
+
+#####################Plot traces without jitter correction ###########################
+
+delayRun = [(val + 2400) * 6.667 for val in stageRun]
+fig, ax = plt.subplots(nrows=5, figsize=(6,20))
+# Time plot range
+t1=-1000
+t2=3000
+ax[0].plot(delayRun, norIntRun_mean)
+ax[0].set_title('Intensity')
+ax[0].set_ylabel('Intensity /a.u.')
+ax[0].set_xlabel('Delay /fs')
+ax[0].set_xlim(t1,t2)
+
+ax[1].plot(delayRun, norIntRun_comx)
+ax[1].set_title('COM_x')
+ax[1].set_ylabel('COM_x /pixel')
+ax[1].set_xlabel('Delay /fs')
+ax[1].set_xlim(t1,t2)
+
+ax[2].plot(delayRun, norIntRun_comy)
+ax[2].set_title('COM_y')
+ax[2].set_ylabel('COM_y /pixel')
+ax[2].set_xlabel('Delay /fs')
+ax[2].set_xlim(t1,t2)
+
+ax[3].plot(delayRun, norIntRun_sigmax)
+ax[3].set_title('Sigma_x')
+ax[3].set_ylabel('Sigma_x /pixel')
+ax[3].set_xlabel('Delay /fs')
+ax[3].set_xlim(t1,t2)
+
+ax[4].plot(delayRun, norIntRun_sigmay)
+ax[4].set_title('Sigma_y')
+ax[4].set_ylabel('Sigma_y /pixel')
+ax[4].set_xlabel('Delay /fs')
+ax[4].set_xlim(t1,t2)
+
+plt.tight_layout()
+plt.savefig(cfg.outputdirectory / 'I_vs_t_no_jitter_correction.pdf')
+print('Saved I vs t (no jitter correction)')
+print((cfg.outputdirectory / 'I_vs_t_no_jitter_correction.pdf').absolute().as_posix())
+
+
+################### jitter correction ###########################
+
+# #### Read TM data
+
+tmDF = pd.DataFrame(columns=['run', 'tag', 'TM'])
+for run in runList:
+    with h5py.File(cfg.workdirectory / '{}.tma.h5'.format(run), 'r') as f:
+        TMList = np.array(f['/cam1/results/quality_check/derivative/timing_edge/value'])
+        quality = np.array(f['/cam1/results/quality_check/derivative/total'])
+        tagList = np.array(f['/common/tag_number_list'])
+    # Make all the values=0 NaN
+    TMList = TMList * np.where(quality == 0, np.nan, quality)
+    # Same here, df corresponds to each run, while tmDF corresponds to all the runs
+    df = pd.DataFrame()
+    df['tag'] = tagList
+    df['TM'] = TMList
+    df['run'] = run
+    tmDF = pd.concat([tmDF,df], ignore_index=True)
+
+
+tmDF.sort_values('tag', inplace=True)
+
+
+# #### Analysis for jitter correction
+
+# Copy all the contents in dataDF to anaDF
+anaDF = dataDF.copy()
+# anaDF simply has one more column which is TM, which is copied from tmDF (run and tag have already existed in dataDF)
+anaDF['TM'] = tmDF['TM']
+# TM center pixcel on detector
+TMcenter = np.nanmean(anaDF[anaDF['run'] == runList[0]]['TM'])
+# Define time delay
+anaDF['delay'] = (anaDF['stage'] + 2400) * 6.667 - (anaDF['TM'] - TMcenter) * 2.43378
+
+
+##################### Plot traces with jitter correction ###########################
+
+pumpon_df = anaDF[anaDF['laser_shutter_state']]
+step = 30
+delay_min = -1500
+delay_max = 4000
+intTh = cfg.intensitythreshold
+
+intCorr = []
+COMxCorr = []
+COMyCorr = []
+
+sigmaxCorr = []
+sigmayCorr = []
+
+delayCorr = []
+df = pd.DataFrame()
+delay = delay_min
+while delay < delay_max:
+    # Bin the time delay within each step starting from delay_min
+    df = pumpon_df.query('{} <= delay < {}'.format(delay, delay+step))
+    
+    if len(df) > 0:
+        ### only select the data with higher intensity than intTh. Same apply to the other parameters. All the low values are NaN
+        int0 = df['int0'].where(df['int0'] > intTh, np.nan)
+        int1_sum=df['int1_sum'].where(df['int0'] > intTh, np.nan)
+        COM_x=df['COM_x'].where(df['int0'] > intTh, np.nan)
+        COM_y=df['COM_y'].where(df['int0'] > intTh, np.nan)
+        sigma_x=df['sigma_x'].where(df['int0'] > intTh, np.nan)
+        sigma_y=df['sigma_y'].where(df['int0'] > intTh, np.nan)
+    
+        ### average the non-NaN values
+        intCorr.append(np.nanmean(df['int1_sum']/int0))
+        COMxCorr.append(np.nanmean(COM_x))
+        COMyCorr.append(np.nanmean(COM_y))
+        sigmaxCorr.append(np.nanmean(sigma_x))
+        sigmayCorr.append(np.nanmean(sigma_y))
+        delayCorr.append(delay + step/2)
+    delay += step
+
+# In[289]:
+fig, ax = plt.subplots(nrows=5, figsize=(6,20))  
+# Time plot range
+t1=-1000
+t2=3000
+ax[0].plot(delayCorr, intCorr)
+ax[0].set_title('Intensity')
+ax[0].set_ylabel('Intensity /a.u.')
+ax[0].set_xlabel('Delay /fs')
+ax[0].set_xlim(t1,t2)
+
+ax[1].plot(delayCorr, COMxCorr)
+ax[1].set_title('COM_x')
+ax[1].set_ylabel('COM_x /pixel')
+ax[1].set_xlabel('Delay /fs')
+ax[1].set_xlim(t1,t2)
+
+ax[2].plot(delayCorr, COMyCorr)
+ax[2].set_title('COM_y')
+ax[2].set_ylabel('COM_y /pixel')
+ax[2].set_xlabel('Delay /fs')
+ax[2].set_xlim(t1,t2)
+
+ax[3].plot(delayCorr, sigmaxCorr)
+ax[3].set_title('Sigma_x')
+ax[3].set_ylabel('Sigma_x /pixel')
+ax[3].set_xlabel('Delay /fs')
+ax[3].set_xlim(t1,t2)
+
+ax[4].plot(delayCorr, sigmayCorr)
+ax[4].set_title('Sigma_y')
+ax[4].set_ylabel('Sigma_y /pixel')
+ax[4].set_xlabel('Delay /fs')
+ax[4].set_xlim(t1,t2)
+
+plt.tight_layout()
+plt.savefig(cfg.outputdirectory / 'I_vs_t_jitter_correction.pdf')
+print('Saved I vs t (with jitter correction):')
+print((cfg.outputdirectory / 'I_vs_t_jitter_correction.pdf').absolute().as_posix())
+
+
+##################### Plot differential traces with jitter correction ###########################
+
+diffDF = pd.DataFrame()
+print(anaDF)
+for ontag, ontaggroup in anaDF[anaDF['laser_shutter_state'] == 1].groupby('tag'):
+    for offtag, offtaggroup in anaDF[anaDF['laser_shutter_state'] == 0].groupby('tag'):
+        if abs(ontag-offtag) == 2:
+            row = ontaggroup.copy()
+            row['diffInt_sum'] = (ontaggroup['int1_sum']/ontaggroup['int0']-offtaggroup['int1_sum']/offtaggroup['int0']) / (offtaggroup['int1_sum']/offtaggroup['int0'])
+            row['diffInt_max'] = (ontaggroup['int1_max']/ontaggroup['int0']-offtaggroup['int1_max']/offtaggroup['int0']) / (offtaggroup['int1_max']/offtaggroup['int0'])
+            diffDF = pd.concat([diffDF, row])
+print(diffDF)
+
+step = 30
+delay_min = -1500
+delay_max = 4000
+intTh = cfg.intensitythreshold
+
+intCorr = []
+COMxCorr = []
+COMyCorr = []
+
+sigmaxCorr = []
+sigmayCorr = []
+
+delayCorr = []
+df = pd.DataFrame()
+delay = delay_min
+while delay < delay_max:
+    # Bin the time delay within each step starting from delay_min
+    df = diffDF.query('{} <= delay < {}'.format(delay, delay+step))
+    
+    if len(df) > 0:
+        ### average the non-NaN values
+        intCorr.append(np.nanmean(diff['int1_sum']))
+        delayCorr.append(delay + step/2)
+    delay += step
+
+# In[289]:
+fig, ax = plt.subplots(nrows=1, figsize=(6,4))  
+# Time plot range
+t1=-1000
+t2=3000
+ax.plot(delayCorr, intCorr)
+ax.set_title('Intensity')
+ax.set_ylabel('Intensity /a.u.')
+ax.set_xlabel('Delay /fs')
+ax.set_xlim(t1,t2)
+
+plt.tight_layout()
+plt.savefig(cfg.outputdirectory / 'diffI_vs_t_jitter_correction.pdf')
+print('Saved differential I vs t (with jitter correction):')
+print((cfg.outputdirectory / 'diffI_vs_t_jitter_correction.pdf').absolute().as_posix())
+"""
+
+    python_filename = Path(mkstemp(dir=cfg.workdirectory)[1])
+    sh_filename = Path(mkstemp(dir=cfg.workdirectory)[1])
+    sh_script = f"""#!/bin/bash
+module load SACLA_tool/1.0.0
+export LLST_PATH="/bl3strg/exp2018-2:/arcv1/recall/20231005/ExpData/bl3strg/exp2018-2"
+chmod 777 {python_filename.absolute().as_posix()}
+{python_filename.absolute().as_posix()} -b {cfg.background} -od {cfg.outputdirectory.as_posix()} -wd {cfg.workdirectory.as_posix()} {cfg.start} {cfg.end} {cfg.x1} {cfg.y1} {cfg.x2} {cfg.y2} -l {cfg.backgroundlimit} -t {cfg.intensitythreshold}
+rm {python_filename.absolute().as_posix()}
+rm {sh_filename.absolute().as_posix()}
+"""
+
+    ofile = cfg.outputdirectory / 'qsublog.o'
+    efile = cfg.outputdirectory / 'qsublog.e'
+    with open(python_filename, 'w') as fh:
+        fh.write(python_script)
+    with open(sh_filename, 'w') as fh:
+        fh.write(sh_script)
+    run(shlex.split(f'qsub -o {ofile.absolute().as_posix()} -e {efile.absolute().as_posix()} -l mem={cfg.memorylimitgb}gb {sh_filename.absolute().as_posix()} {-i if cfg.interactive else ""}'))
+
+if __name__ == '__main__':
+    cfg = get_cfg()
+    main(cfg)
