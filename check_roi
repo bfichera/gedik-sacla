@@ -91,7 +91,8 @@ with h5py.File(cfg.workdirectory / '{}.h5'.format(run), 'r') as h5f:
     img = h5f[detector_str.format(run, tagList[0])][...]
     #image averaging
     for tag in tagList[1:]:
-        img += h5f[detector_str.format(run, tag)][...]
+        if laser_shutter_open:
+            img += h5f[detector_str.format(run, tag)][...]
     img /= len(tagList)
     img -= bgimg
 

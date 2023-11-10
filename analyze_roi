@@ -141,7 +141,8 @@ with h5py.File(cfg.workdirectory / '{}.h5'.format(run), 'r') as h5f:
     img = h5f[detector_str.format(run, tagList[0])][...]
     # image averaging
     for tag in tagList[1:]:
-        img += h5f[detector_str.format(run, tag)][...]
+        if laser_shutter_open:
+            img += h5f[detector_str.format(run, tag)][...]
     img /= len(tagList)
     img -= bgimg
 
@@ -164,10 +165,10 @@ for run in runList:
     with h5py.File(cfg.workdirectory / '{}.h5'.format(run), 'r') as h5f:
         # define the list of parameters
         laser_shutter_list = h5f[laser_shutter_str.format(run)][...] == 1
-        tagList = h5f[tagList_str.format(run)][...]
-        int00List = h5f[int00_str.format(run)][...]
-        int01List = h5f[int01_str.format(run)][...]
-        stageList = h5f[stage_str.format(run)][...]
+        tagList = h5f[tagList_str.format(run)][...][laser_shutter_list]
+        int00List = h5f[int00_str.format(run)][...][laser_shutter_list]
+        int01List = h5f[int01_str.format(run)][...][laser_shutter_list]
+        stageList = h5f[stage_str.format(run)][...][laser_shutter_list]
 
         int1SumList = []
         int1MaxList = []
@@ -220,7 +221,6 @@ for run in runList:
     df = pd.DataFrame()
     df['tag'] = tagList
     df['stage'] = stageList
-    df['laser_shutter_state'] = laser_shutter_list
     df['int0'] = int00List + int01List
     df['int1_sum'] = int1SumList
     df['int1_max'] = int1MaxList
@@ -239,16 +239,15 @@ dataDF.sort_values('tag', inplace=True)
 
 # Again, choose the first run for example
 df = dataDF[dataDF['run'] == runList[0]]
-pumpon_df = df[df['laser_shutter_state']]
 
 # linearity check
-x = pumpon_df['int0'].to_numpy()
-y = pumpon_df['int1_sum'].to_numpy()
+x = df['int0'].to_numpy()
+y = df['int1_sum'].to_numpy()
 x_ = x[(np.logical_not(np.isnan(x))) & (np.logical_not(np.isnan(y)))]
 y_ = y[(np.logical_not(np.isnan(x))) & (np.logical_not(np.isnan(y)))]
 # Can change threshold if desired
 test_rsquared(x_, y_, threshold=0.95)
-plt.scatter(pumpon_df['int0'],pumpon_df['int1_sum']) 
+plt.scatter(df['int0'],df['int1_sum']) 
 plt.savefig(cfg.outputdirectory / 'LinearityCheck.pdf')
 print('Saved linearity scatter plot:')
 print((cfg.outputdirectory / 'LinearityCheck.pdf').absolute().as_posix())
@@ -257,17 +256,17 @@ print((cfg.outputdirectory / 'LinearityCheck.pdf').absolute().as_posix())
 # In[233]:
 # Plot histogram of all the parameters
 fig, ax = plt.subplots(ncols=6, figsize=(20,5))      
-ax[0].hist(pumpon_df['int0'], bins=200)
+ax[0].hist(df['int0'], bins=200)
 ax[0].set_title('Input')
-ax[1].hist(pumpon_df['int1_sum'], bins=200)
+ax[1].hist(df['int1_sum'], bins=200)
 ax[1].set_title('Intensity')
-ax[2].hist(pumpon_df['COM_x'], bins=200)
+ax[2].hist(df['COM_x'], bins=200)
 ax[2].set_title('xpos')
-ax[3].hist(pumpon_df['COM_y'], bins=200)
+ax[3].hist(df['COM_y'], bins=200)
 ax[3].set_title('ypos')
-ax[4].hist(pumpon_df['sigma_x'], bins=200)
+ax[4].hist(df['sigma_x'], bins=200)
 ax[4].set_title('xsigma')
-ax[5].hist(pumpon_df['sigma_y'], bins=200)
+ax[5].hist(df['sigma_y'], bins=200)
 ax[5].set_title('ysigma')
 plt.tight_layout()
 plt.savefig(cfg.outputdirectory / 'histogram_nothreshold.pdf')
@@ -300,15 +299,13 @@ stageRun = []
 
 for run in runList:
     df = dataDF[dataDF['run'] == run]
-    pumpon_df = df[df['laser_shutter_state']]
     ### only select the data with higher intensity than intTh. Same apply to the other parameters. All the low values are NaN
-    int0 = pumpon_df['int0'].where(pumpon_df['int0'] > intTh, np.nan)
-    int1_sum=pumpon_df['int1_sum'].where(pumpon_df['int0'] > intTh, np.nan)
-    COM_x=pumpon_df['COM_x'].where(pumpon_df['int0'] > intTh, np.nan)
-    COM_y=pumpon_df['COM_y'].where(pumpon_df['int0'] > intTh, np.nan)
-    sigma_x=pumpon_df['sigma_x'].where(pumpon_df['int0'] > intTh, np.nan)
-    sigma_y=pumpon_df['sigma_y'].where(pumpon_df['int0'] > intTh, np.nan)
-    laser_shutter_list = pumpon_df['laser_shutter_state'].where(pumpon_df['int0'] > intTh, np.nan)
+    int0 = df['int0'].where(df['int0'] > intTh, np.nan)
+    int1_sum=df['int1_sum'].where(df['int0'] > intTh, np.nan)
+    COM_x=df['COM_x'].where(df['int0'] > intTh, np.nan)
+    COM_y=df['COM_y'].where(df['int0'] > intTh, np.nan)
+    sigma_x=df['sigma_x'].where(df['int0'] > intTh, np.nan)
+    sigma_y=df['sigma_y'].where(df['int0'] > intTh, np.nan)
     
     ### average the non-NaN values
     norIntRun_mean.append(np.nanmean(int1_sum/int0))
@@ -320,7 +317,7 @@ for run in runList:
     norIntRun_sigmax.append(np.nanmean(sigma_x))
     norIntRun_sigmay.append(np.nanmean(sigma_y))    
     
-    stageRun.append(list(pumpon_df['stage'])[0])   
+    stageRun.append(list(df['stage'])[0])   
 
 
 # Plot histogram of all the parameters after the threshold is applied. Data should be more concentrated.
@@ -394,9 +391,11 @@ print((cfg.outputdirectory / 'I_vs_t_no_jitter_correction.pdf').absolute().as_po
 tmDF = pd.DataFrame(columns=['run', 'tag', 'TM'])
 for run in runList:
     with h5py.File(cfg.workdirectory / '{}.tma.h5'.format(run), 'r') as f:
-        TMList = np.array(f['/cam1/results/quality_check/derivative/timing_edge/value'])
-        quality = np.array(f['/cam1/results/quality_check/derivative/total'])
-        tagList = np.array(f['/common/tag_number_list'])
+        with h5py.File(cfg.workdirectory / '{}.h5'.format(run), 'r') as g:
+            laser_shutter_list = g[laser_shutter_str.format(run)][...] == 1
+            TMList = np.array(f['/cam1/results/quality_check/derivative/timing_edge/value'])[laser_shutter_list]
+            quality = np.array(f['/cam1/results/quality_check/derivative/total'])[laser_shutter_list]
+            tagList = np.array(f['/common/tag_number_list'])[laser_shutter_list]
     # Make all the values=0 NaN
     TMList = TMList * np.where(quality == 0, np.nan, quality)
     # Same here, df corresponds to each run, while tmDF corresponds to all the runs
@@ -424,7 +423,6 @@ anaDF['delay'] = (anaDF['stage'] + 2400) * 6.667 - (anaDF['TM'] - TMcenter) * 2.
 
 ##################### Plot traces with jitter correction ###########################
 
-pumpon_df = anaDF[anaDF['laser_shutter_state']]
 step = 30
 delay_min = -1500
 delay_max = 4000
@@ -442,7 +440,7 @@ df = pd.DataFrame()
 delay = delay_min
 while delay < delay_max:
     # Bin the time delay within each step starting from delay_min
-    df = pumpon_df.query('{} <= delay < {}'.format(delay, delay+step))
+    df = anaDF.query('{} <= delay < {}'.format(delay, delay+step))
     
     if len(df) > 0:
         ### only select the data with higher intensity than intTh. Same apply to the other parameters. All the low values are NaN
@@ -501,61 +499,6 @@ plt.tight_layout()
 plt.savefig(cfg.outputdirectory / 'I_vs_t_jitter_correction.pdf')
 print('Saved I vs t (with jitter correction):')
 print((cfg.outputdirectory / 'I_vs_t_jitter_correction.pdf').absolute().as_posix())
-
-
-##################### Plot differential traces with jitter correction ###########################
-
-diffDF = pd.DataFrame()
-print(anaDF)
-for ontag, ontaggroup in anaDF[anaDF['laser_shutter_state'] == 1].groupby('tag'):
-    for offtag, offtaggroup in anaDF[anaDF['laser_shutter_state'] == 0].groupby('tag'):
-        if abs(ontag-offtag) == 2:
-            row = ontaggroup.copy()
-            row['diffInt_sum'] = (ontaggroup['int1_sum']/ontaggroup['int0']-offtaggroup['int1_sum']/offtaggroup['int0']) / (offtaggroup['int1_sum']/offtaggroup['int0'])
-            row['diffInt_max'] = (ontaggroup['int1_max']/ontaggroup['int0']-offtaggroup['int1_max']/offtaggroup['int0']) / (offtaggroup['int1_max']/offtaggroup['int0'])
-            diffDF = pd.concat([diffDF, row])
-print(diffDF)
-
-step = 30
-delay_min = -1500
-delay_max = 4000
-intTh = cfg.intensitythreshold
-
-intCorr = []
-COMxCorr = []
-COMyCorr = []
-
-sigmaxCorr = []
-sigmayCorr = []
-
-delayCorr = []
-df = pd.DataFrame()
-delay = delay_min
-while delay < delay_max:
-    # Bin the time delay within each step starting from delay_min
-    df = diffDF.query('{} <= delay < {}'.format(delay, delay+step))
-    
-    if len(df) > 0:
-        ### average the non-NaN values
-        intCorr.append(np.nanmean(diff['int1_sum']))
-        delayCorr.append(delay + step/2)
-    delay += step
-
-# In[289]:
-fig, ax = plt.subplots(nrows=1, figsize=(6,4))  
-# Time plot range
-t1=-1000
-t2=3000
-ax.plot(delayCorr, intCorr)
-ax.set_title('Intensity')
-ax.set_ylabel('Intensity /a.u.')
-ax.set_xlabel('Delay /fs')
-ax.set_xlim(t1,t2)
-
-plt.tight_layout()
-plt.savefig(cfg.outputdirectory / 'diffI_vs_t_jitter_correction.pdf')
-print('Saved differential I vs t (with jitter correction):')
-print((cfg.outputdirectory / 'diffI_vs_t_jitter_correction.pdf').absolute().as_posix())
 """
 
     python_filename = Path(mkstemp(dir=cfg.workdirectory)[1])
